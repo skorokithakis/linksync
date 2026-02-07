@@ -1,0 +1,12 @@
+[linkora]
+url = "http://localhost:45454"
+token = "your-linkora-token"
+verify_tls = false
+
+[readeck]
+url = "https://readeck.example.com"
+token = "your-readeck-token"
+
+[sync]
+state_db = "/data/state.db"
+folder_name = "Read later"

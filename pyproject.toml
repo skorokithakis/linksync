@@ -1,0 +1,8 @@
+[project]
+name = "linksync"
+version = "0.1.0"
+description = "Sync bookmarks between Linkora and Readeck"
+requires-python = ">=3.11"
+dependencies = [
+    "httpx",
+]

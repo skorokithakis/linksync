@@ -1,0 +1,9 @@
+.venv/
+.git/
+.gitignore
+sync-server/
+readeck/
+misc/
+*.md
+__pycache__/
+*.pyc

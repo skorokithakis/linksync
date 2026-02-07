@@ -1,0 +1,10 @@
+services:
+  linksync:
+    build: .
+    restart: unless-stopped
+    volumes:
+      - ./config:/config:ro
+      - linksync-data:/data
+
+volumes:
+  linksync-data:
