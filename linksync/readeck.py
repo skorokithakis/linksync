@@ -1,4 +1,19 @@
+import logging
+
 import httpx
+
+logger = logging.getLogger(__name__)
+
+
+def _raise_for_status(response: httpx.Response) -> None:
+    """Raise an error with the response body included for diagnostics."""
+    if response.is_success:
+        return
+    raise httpx.HTTPStatusError(
+        f"{response.status_code} {response.reason_phrase}: {response.text}",
+        request=response.request,
+        response=response,
+    )
 
 
 async def get_sync_changes(
@@ -9,11 +24,10 @@ async def get_sync_changes(
     Returns all changes if since is None, otherwise returns changes after the given timestamp.
     Each change has id, time (ISO 8601), and type (update or delete).
     """
-    # Readeck's sync endpoint uses "after" as the query parameter name.
     url = f"{base_url}/api/bookmarks/sync/"
     params = {"after": since} if since is not None else {}
     response = await client.get(url, params=params)
-    response.raise_for_status()
+    _raise_for_status(response)
     return response.json()
 
 
@@ -25,7 +39,7 @@ async def get_bookmark(client: httpx.AsyncClient, base_url: str, uid: str) -> di
     """
     url = f"{base_url}/api/bookmarks/{uid}"
     response = await client.get(url)
-    response.raise_for_status()
+    _raise_for_status(response)
     return response.json()
 
 
@@ -37,7 +51,7 @@ async def get_labels(client: httpx.AsyncClient, base_url: str) -> list[dict]:
     """
     url = f"{base_url}/api/bookmarks/labels"
     response = await client.get(url)
-    response.raise_for_status()
+    _raise_for_status(response)
     return response.json()
 
 
@@ -51,18 +65,22 @@ async def create_bookmark(
     """
     endpoint = f"{base_url}/api/bookmarks/"
     body = {"url": url, "title": title, "labels": labels}
+    logger.debug(f"Creating bookmark: {url}")
     response = await client.post(endpoint, json=body)
-    response.raise_for_status()
+    _raise_for_status(response)
 
     # Readeck returns 202 Accepted with the bookmark UID in the bookmark-id header.
     if response.status_code != 202:
         raise ValueError(
-            f"Expected 202 Accepted, got {response.status_code} when creating bookmark"
+            f"Expected 202 Accepted, got {response.status_code} when creating bookmark for {url}"
         )
 
     bookmark_id = response.headers.get("bookmark-id")
     if not bookmark_id:
-        raise ValueError("bookmark-id header missing from create_bookmark response")
+        raise ValueError(
+            f"bookmark-id header missing from create_bookmark response for {url}, "
+            f"headers: {dict(response.headers)}"
+        )
 
     return bookmark_id
 
@@ -76,8 +94,9 @@ async def update_bookmark(
     The labels field replaces all labels (full replace, not incremental).
     """
     url = f"{base_url}/api/bookmarks/{uid}"
+    logger.debug(f"Updating bookmark {uid}: fields={list(fields.keys())}")
     response = await client.patch(url, json=fields)
-    response.raise_for_status()
+    _raise_for_status(response)
 
 
 async def delete_bookmark(
@@ -88,8 +107,9 @@ async def delete_bookmark(
     Returns 204 No Content on success.
     """
     url = f"{base_url}/api/bookmarks/{uid}"
+    logger.debug(f"Deleting bookmark {uid}")
     response = await client.delete(url)
-    response.raise_for_status()
+    _raise_for_status(response)
 
 
 async def rename_label(
@@ -102,5 +122,6 @@ async def rename_label(
     url = f"{base_url}/api/bookmarks/labels"
     params = {"name": old_name}
     body = {"name": new_name}
+    logger.debug(f"Renaming label '{old_name}' -> '{new_name}'")
     response = await client.patch(url, params=params, json=body)
-    response.raise_for_status()
+    _raise_for_status(response)

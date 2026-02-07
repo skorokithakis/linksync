@@ -3,8 +3,21 @@ import time
 
 import httpx
 
+logger = logging.getLogger(__name__)
+
 # Correlation object included in all mutating requests to identify this client.
 CORRELATION = {"id": "linksync", "clientName": "linksync"}
+
+
+def _raise_for_status(response: httpx.Response) -> None:
+    """Raise an error with the response body included for diagnostics."""
+    if response.is_success:
+        return
+    raise httpx.HTTPStatusError(
+        f"{response.status_code} {response.reason_phrase}: {response.text}",
+        request=response.request,
+        response=response,
+    )
 
 
 async def get_updates(client: httpx.AsyncClient, base_url: str, since_timestamp: int) -> dict:
@@ -13,7 +26,7 @@ async def get_updates(client: httpx.AsyncClient, base_url: str, since_timestamp:
     Returns AllTablesDTO containing links, folders, panels, panelFolders, tags, and linkTags.
     """
     response = await client.get(f"{base_url}/GET_UPDATES", params={"eventTimestamp": since_timestamp})
-    response.raise_for_status()
+    _raise_for_status(response)
     return response.json()
 
 
@@ -23,7 +36,7 @@ async def get_tombstones(client: httpx.AsyncClient, base_url: str, since_timesta
     Each tombstone contains deletedAt, operation, and payload fields.
     """
     response = await client.get(f"{base_url}/GET_TOMBSTONES", params={"eventTimestamp": since_timestamp})
-    response.raise_for_status()
+    _raise_for_status(response)
     return response.json()
 
 
@@ -33,7 +46,7 @@ async def get_tags(client: httpx.AsyncClient, base_url: str) -> list[dict]:
     Each tag contains id, name, and eventTimestamp.
     """
     response = await client.get(f"{base_url}/GET_TAGS")
-    response.raise_for_status()
+    _raise_for_status(response)
     return response.json()
 
 
@@ -43,7 +56,7 @@ async def get_root_folders(client: httpx.AsyncClient, base_url: str) -> list[dic
     Each folder contains id, name, note, parentFolderId, isArchived, and eventTimestamp.
     """
     response = await client.get(f"{base_url}/GET_ROOT_FOLDERS")
-    response.raise_for_status()
+    _raise_for_status(response)
     return response.json()
 
 
@@ -58,7 +71,7 @@ async def create_folder(client: httpx.AsyncClient, base_url: str, name: str) -> 
         "eventTimestamp": int(time.time()),
     }
     response = await client.post(f"{base_url}/CREATE_FOLDER", json=body)
-    response.raise_for_status()
+    _raise_for_status(response)
     return response.json()["id"]
 
 
@@ -89,8 +102,9 @@ async def create_link(
         "tags": tag_ids,
         "forceRetrieveOGMetaInfo": True,
     }
+    logger.debug(f"Creating link: {url} in folder {folder_id}")
     response = await client.post(f"{base_url}/CREATE_A_NEW_LINK", json=body)
-    response.raise_for_status()
+    _raise_for_status(response)
     return response.json()["id"]
 
 
@@ -127,14 +141,15 @@ async def update_link(
         "linkTags": link_tags,
         "eventTimestamp": int(time.time()),
     }
+    logger.debug(f"Updating link {link_id}: {url}")
     response = await client.post(f"{base_url}/UPDATE_LINK", json=body)
     
     # Handle LWW conflict: server already has newer data.
     if response.status_code == 500 and "This row already contains the latest data." in response.text:
-        logging.warning(f"LWW conflict for link {link_id}: server has newer data, skipping update")
+        logger.warning(f"LWW conflict for link {link_id}: server has newer data, skipping update")
         return
     
-    response.raise_for_status()
+    _raise_for_status(response)
 
 
 async def delete_link(client: httpx.AsyncClient, base_url: str, link_id: int) -> None:
@@ -144,8 +159,9 @@ async def delete_link(client: httpx.AsyncClient, base_url: str, link_id: int) ->
         "correlation": CORRELATION,
         "eventTimestamp": int(time.time()),
     }
+    logger.debug(f"Deleting link {link_id}")
     response = await client.post(f"{base_url}/DELETE_A_LINK", json=body)
-    response.raise_for_status()
+    _raise_for_status(response)
 
 
 async def create_tag(client: httpx.AsyncClient, base_url: str, name: str) -> int:
@@ -155,8 +171,9 @@ async def create_tag(client: httpx.AsyncClient, base_url: str, name: str) -> int
         "eventTimestamp": int(time.time()),
         "correlation": CORRELATION,
     }
+    logger.debug(f"Creating tag: {name}")
     response = await client.post(f"{base_url}/CREATE_TAG", json=body)
-    response.raise_for_status()
+    _raise_for_status(response)
     return response.json()["id"]
 
 
@@ -168,5 +185,6 @@ async def rename_tag(client: httpx.AsyncClient, base_url: str, tag_id: int, new_
         "eventTimestamp": int(time.time()),
         "correlation": CORRELATION,
     }
+    logger.debug(f"Renaming tag {tag_id} to '{new_name}'")
     response = await client.post(f"{base_url}/RENAME_TAG", json=body)
-    response.raise_for_status()
+    _raise_for_status(response)

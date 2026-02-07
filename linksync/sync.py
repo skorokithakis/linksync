@@ -52,6 +52,12 @@ async def run_sync(config: Config, connection: sqlite3.Connection) -> None:
         
         readeck_last_sync = state.get_state(connection, "readeck_last_sync")
         
+        logger.info(
+            f"Syncing folder ID {linkora_folder_id}, "
+            f"Linkora last sync: {linkora_last_sync}, "
+            f"Readeck last sync: {readeck_last_sync}"
+        )
+        
         # Phase 2: Fetch changes
         logger.info("Phase 2: Fetch changes")
         
@@ -64,6 +70,18 @@ async def run_sync(config: Config, connection: sqlite3.Connection) -> None:
         
         readeck_updates = [change for change in readeck_changes if change["type"] == "update"]
         readeck_deletions = [change for change in readeck_changes if change["type"] == "delete"]
+        
+        linkora_links_in_folder = [
+            link for link in linkora_updates["links"]
+            if link["idOfLinkedFolder"] == linkora_folder_id
+        ]
+        logger.info(
+            f"Fetched {len(linkora_updates['links'])} Linkora links "
+            f"({len(linkora_links_in_folder)} in sync folder), "
+            f"{len(linkora_tombstones)} tombstones, "
+            f"{len(readeck_updates)} Readeck updates, "
+            f"{len(readeck_deletions)} Readeck deletions"
+        )
         
         readeck_bookmarks = []
         for change in readeck_updates:
@@ -82,12 +100,13 @@ async def run_sync(config: Config, connection: sqlite3.Connection) -> None:
                 mapping = state.get_mapping_by_linkora_id(connection, link_id)
                 
                 if mapping is None:
+                    logger.debug(f"No mapping for deleted Linkora link {link_id}, skipping")
                     continue
                 
                 linkora_id, readeck_uid, url = mapping
                 await readeck.delete_bookmark(readeck_client, config.readeck.url, readeck_uid)
                 state.remove_mapping_by_linkora_id(connection, linkora_id)
-                logger.info(f"Deleted bookmark {readeck_uid} (Linkora link {link_id})")
+                logger.info(f"Deleted Readeck bookmark {readeck_uid} for Linkora link {link_id} ({url})")
             except Exception as error:
                 logger.warning(f"Failed to process Linkora deletion for link {link_id}: {error}")
         
@@ -97,12 +116,13 @@ async def run_sync(config: Config, connection: sqlite3.Connection) -> None:
                 mapping = state.get_mapping_by_readeck_uid(connection, readeck_uid)
                 
                 if mapping is None:
+                    logger.debug(f"No mapping for deleted Readeck bookmark {readeck_uid}, skipping")
                     continue
                 
                 linkora_id, _, url = mapping
                 await linkora.delete_link(linkora_client, config.linkora.url, linkora_id)
                 state.remove_mapping_by_readeck_uid(connection, readeck_uid)
-                logger.info(f"Deleted link {linkora_id} (Readeck bookmark {readeck_uid})")
+                logger.info(f"Deleted Linkora link {linkora_id} for Readeck bookmark {readeck_uid} ({url})")
             except Exception as error:
                 logger.warning(f"Failed to process Readeck deletion for bookmark {readeck_uid}: {error}")
         
@@ -114,6 +134,11 @@ async def run_sync(config: Config, connection: sqlite3.Connection) -> None:
         existing_tag_mappings = state.get_all_tag_mappings(connection)
         
         tag_mappings_dict = {tag_id: label_name for tag_id, label_name in existing_tag_mappings}
+        logger.info(
+            f"Tags: {len(linkora_tags)} Linkora, "
+            f"{len(readeck_labels)} Readeck, "
+            f"{len(tag_mappings_dict)} mapped"
+        )
         
         for tag in linkora_tags:
             tag_id = tag["id"]
@@ -142,11 +167,8 @@ async def run_sync(config: Config, connection: sqlite3.Connection) -> None:
         
         linkora_updated_urls = {}
         
-        # Step 15: Linkora → Readeck
-        for link in linkora_updates["links"]:
-            if link["idOfLinkedFolder"] != linkora_folder_id:
-                continue
-            
+        # Linkora -> Readeck
+        for link in linkora_links_in_folder:
             try:
                 url = link["url"]
                 linkora_updated_urls[url] = link
@@ -175,7 +197,15 @@ async def run_sync(config: Config, connection: sqlite3.Connection) -> None:
                             "is_marked": link["markedAsImportant"],
                         }
                         await readeck.update_bookmark(readeck_client, config.readeck.url, readeck_uid, fields)
-                        logger.info(f"Updated Readeck bookmark {readeck_uid} from Linkora link {link['id']}")
+                        logger.info(
+                            f"Updated Readeck bookmark {readeck_uid} from Linkora link {link['id']} "
+                            f"(Linkora ts {linkora_timestamp} > Readeck ts {readeck_timestamp}) ({url})"
+                        )
+                    else:
+                        logger.debug(
+                            f"Skipping Linkora link {link['id']} -> Readeck {readeck_uid}: "
+                            f"Readeck is newer (Linkora ts {linkora_timestamp} <= Readeck ts {readeck_timestamp}) ({url})"
+                        )
                 else:
                     label_names = []
                     for link_tag in linkora_updates["linkTags"]:
@@ -189,17 +219,22 @@ async def run_sync(config: Config, connection: sqlite3.Connection) -> None:
                         readeck_client, config.readeck.url, url, link["title"], label_names
                     )
                     state.add_mapping(connection, link["id"], readeck_uid, url)
-                    logger.info(f"Created Readeck bookmark {readeck_uid} from Linkora link {link['id']}")
+                    logger.info(f"Created Readeck bookmark {readeck_uid} from Linkora link {link['id']} ({url})")
             except Exception as error:
-                logger.warning(f"Failed to process Linkora link {link['id']}: {error}")
+                logger.warning(f"Failed to process Linkora link {link['id']} ({link.get('url', '?')}): {error}")
         
-        # Step 16: Readeck → Linkora
+        # Readeck -> Linkora
         readeck_last_sync_epoch = (
             readeck_timestamp_to_epoch(readeck_last_sync) if readeck_last_sync else 0.0
         )
 
         for bookmark in readeck_bookmarks:
             if bookmark.get("is_archived") or bookmark.get("is_deleted"):
+                logger.debug(
+                    f"Skipping Readeck bookmark {bookmark['id']}: "
+                    f"archived={bookmark.get('is_archived')}, deleted={bookmark.get('is_deleted')} "
+                    f"({bookmark.get('url', '?')})"
+                )
                 continue
             
             try:
@@ -210,15 +245,22 @@ async def run_sync(config: Config, connection: sqlite3.Connection) -> None:
                     linkora_id, readeck_uid, _ = mapping
                     readeck_timestamp = readeck_timestamp_to_epoch(bookmark["updated"])
 
-                    # The Readeck sync endpoint doesn't reliably filter by timestamp,
-                    # so we skip bookmarks that haven't actually changed since last sync.
                     if readeck_timestamp <= readeck_last_sync_epoch:
+                        logger.debug(
+                            f"Skipping Readeck bookmark {bookmark['id']}: "
+                            f"not changed since last sync "
+                            f"(bookmark ts {readeck_timestamp} <= last sync {readeck_last_sync_epoch}) ({url})"
+                        )
                         continue
                     
-                    # Skip if this URL was already updated from Linkora and Linkora was newer.
                     if url in linkora_updated_urls:
                         linkora_link = linkora_updated_urls[url]
                         if linkora_link["eventTimestamp"] > readeck_timestamp:
+                            logger.debug(
+                                f"Skipping Readeck bookmark {bookmark['id']} -> Linkora {linkora_id}: "
+                                f"Linkora is newer (Linkora ts {linkora_link['eventTimestamp']} > "
+                                f"Readeck ts {readeck_timestamp}) ({url})"
+                            )
                             continue
                     
                     link_tags = []
@@ -227,8 +269,6 @@ async def run_sync(config: Config, connection: sqlite3.Connection) -> None:
                         if tag_id is not None:
                             link_tags.append({"linkId": linkora_id, "tagId": tag_id})
                     
-                    # Use the Linkora link from updates if available, otherwise use defaults
-                    # for fields we don't sync (mediaType, idOfLinkedFolder).
                     linkora_link = next(
                         (link for link in linkora_updates["links"] if link["id"] == linkora_id),
                         None
@@ -246,7 +286,10 @@ async def run_sync(config: Config, connection: sqlite3.Connection) -> None:
                         linkora_link["mediaType"] if linkora_link else "IMAGE",
                         link_tags,
                     )
-                    logger.info(f"Updated Linkora link {linkora_id} from Readeck bookmark {readeck_uid}")
+                    logger.info(
+                        f"Updated Linkora link {linkora_id} from Readeck bookmark {readeck_uid} "
+                        f"(Readeck ts {readeck_timestamp} > last sync {readeck_last_sync_epoch}) ({url})"
+                    )
                 else:
                     tag_ids = []
                     for label_name in bookmark.get("labels", []):
@@ -268,9 +311,9 @@ async def run_sync(config: Config, connection: sqlite3.Connection) -> None:
                         tag_ids,
                     )
                     state.add_mapping(connection, linkora_id, bookmark["id"], url)
-                    logger.info(f"Created Linkora link {linkora_id} from Readeck bookmark {bookmark['id']}")
+                    logger.info(f"Created Linkora link {linkora_id} from Readeck bookmark {bookmark['id']} ({url})")
             except Exception as error:
-                logger.warning(f"Failed to process Readeck bookmark {bookmark['id']}: {error}")
+                logger.warning(f"Failed to process Readeck bookmark {bookmark['id']} ({bookmark.get('url', '?')}): {error}")
         
         # Phase 6: Finalize
         logger.info("Phase 6: Finalize")

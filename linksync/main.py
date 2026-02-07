@@ -13,10 +13,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Sync bookmarks between Linkora and Readeck")
     parser.add_argument("--config", type=str, default=None, help="Path to config file")
     parser.add_argument("--interval", type=int, default=None, help="Sync interval in seconds (loop mode)")
+    parser.add_argument("--debug", action="store_true", help="Enable debug logging")
     arguments = parser.parse_args()
     
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.DEBUG if arguments.debug else logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
         stream=sys.stderr,
     )
